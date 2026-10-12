@@ -1,0 +1,16 @@
+/build*/
+/install*/
+/data/
+/.agents/
+/.aws/
+/.codex/
+__pycache__/
+*.pyc
+*.so
+*.a
+*.o
+*.log
+*.backup
+*.bak
+/core
+/core.[0-9]*
