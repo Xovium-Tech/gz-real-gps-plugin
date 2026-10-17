@@ -1,0 +1,8 @@
+# Keep source releases minimal; previews and developer checks stay in Git.
+/.gitattributes export-ignore
+/.gitignore export-ignore
+/.github export-ignore
+/docs export-ignore
+/images export-ignore
+/examples export-ignore
+/tests export-ignore

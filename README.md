@@ -1,34 +1,89 @@
 # Real GPS Plugin
 
+[![CI](https://github.com/Xovium-Tech/gz-real-gps-plugin/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/Xovium-Tech/gz-real-gps-plugin/actions/workflows/build.yml)
+[![Latest release](https://img.shields.io/github/v/release/Xovium-Tech/gz-real-gps-plugin)](https://github.com/Xovium-Tech/gz-real-gps-plugin/releases/latest)
+
 GPS receiver simulation for **Gazebo Harmonic and Jetty**, including PX4 fixed-wing aircraft. Satellite count, accuracy and fix availability change with aircraft location, simulation time, satellite geometry and reception quality. Modes include poor reception, loss of GPS and spoofing.
 
-Build from source on the computer running Gazebo. Harmonic uses **gz-sim8**; Jetty uses **gz-sim10**. Each build produces one plugin library. Python helpers download satellite orbit data and connect the quality output to PX4/QGroundControl.
+[![Real GPS plugin demo](https://raw.githubusercontent.com/Xovium-Tech/gz-real-gps-plugin/main/docs/images/gps-demo.gif)](https://raw.githubusercontent.com/Xovium-Tech/gz-real-gps-plugin/main/docs/images/gps-demo.gif)
 
-## 1. Build
+**Source-only distribution:** download the release ZIP and compile it on the
+computer running Gazebo. The archive contains source, headers, CMake files,
+`build.sh`, the Python runtime helpers, this README, and LICENSE. It excludes
+docs, images, examples, tests, CI files, and prebuilt libraries. GitHub's automatic
+source ZIP/tar.gz downloads use the same exclusions. Python helpers download
+satellite orbit data and connect the quality output to PX4/QGroundControl.
 
-Install Gazebo using the official [Harmonic](https://gazebosim.org/docs/harmonic/install_ubuntu/) or [Jetty](https://gazebosim.org/docs/jetty/install_ubuntu/) instructions. On Ubuntu 24.04, with the Gazebo package repository configured:
+## Supported Gazebo versions
+
+| Build target | Simulator | Documented build environment |
+| --- | --- | --- |
+| `harmonic` | Gazebo Harmonic / gz-sim8 | Ubuntu 24.04 |
+| `jetty` | Gazebo Jetty / gz-sim10 | Ubuntu 24.04 |
+
+Choose the target matching your installed simulator and PX4 setup. Each target
+uses a separate build directory and produces one plugin library specific to that
+Gazebo version.
+
+## 1. Install dependencies
+
+Install the chosen simulator using its official instructions:
+[Harmonic](https://gazebosim.org/docs/harmonic/install_ubuntu/) or
+[Jetty](https://gazebosim.org/docs/jetty/install_ubuntu/).
+
+Install the common build dependencies:
 
 ```bash
 sudo apt update
 sudo apt install build-essential cmake git python3
-
-# Install the development packages for your Gazebo version:
-sudo apt install libgz-sim8-dev libgz-plugin2-dev libgz-transport13-dev  # Harmonic
-sudo apt install libgz-sim10-dev libgz-plugin4-dev libgz-transport15-dev  # Jetty
 ```
 
-```bash
-git clone https://github.com/Xovium-Tech/gz-real-gps-plugin.git
-cd gz-real-gps-plugin
+Then install the development packages for **your chosen target only**, with the
+Gazebo package repository configured:
 
-# Choose one:
+```bash
+# Harmonic / Ubuntu 24.04
+sudo apt install libgz-sim8-dev libgz-plugin2-dev libgz-transport13-dev
+
+# Jetty / Ubuntu 24.04
+sudo apt install libgz-sim10-dev libgz-plugin4-dev libgz-transport15-dev
+```
+
+## 2. Get the source and build
+
+```bash
+git clone --depth 1 https://github.com/Xovium-Tech/gz-real-gps-plugin.git
+cd gz-real-gps-plugin
+```
+
+Alternatively, download the source ZIP from the
+[latest release](https://github.com/Xovium-Tech/gz-real-gps-plugin/releases/latest),
+extract it and open a terminal in the extracted directory.
+
+Run **one** command for your simulator:
+
+```bash
 JOBS=2 ./build.sh harmonic
 JOBS=2 ./build.sh jetty
 ```
 
-The helper builds in Release mode; its default target is `harmonic`. The output is `build-harmonic/libRealGpsSystem.so` or `build-jetty/libRealGpsSystem.so`. Use the version matching both Gazebo and PX4.
+The helper builds in Release mode; its default target is `harmonic`. The output
+is `build-harmonic/libRealGpsSystem.so` or `build-jetty/libRealGpsSystem.so`.
+Increase `JOBS` if you have enough RAM for more parallel compilation.
 
-From the plugin directory, export the library path before launching your simulation:
+Equivalent CMake commands, using Jetty as an example:
+
+```bash
+cmake -S . -B build-jetty -DGZ_DISTRO=jetty -DCMAKE_BUILD_TYPE=Release
+cmake --build build-jetty --parallel 2
+```
+
+Replace `jetty` in both places with `harmonic` for a Harmonic build.
+
+## 3. Load the plugin
+
+The build helper prints the required search path. From the plugin directory,
+set it in the terminal where you launch Gazebo or PX4:
 
 ```bash
 # Change build-harmonic to build-jetty for Jetty.
@@ -36,8 +91,6 @@ export GZ_SIM_SYSTEM_PLUGIN_PATH="$PWD/build-harmonic${GZ_SIM_SYSTEM_PLUGIN_PATH
 ```
 
 For a launch script, use the absolute plugin build directory instead of `$PWD`.
-
-## 2. Add to the aircraft
 
 Set the world's `<spherical_coordinates>` to `EARTH_WGS84` with the same latitude, longitude and elevation as your terrain. Remove the aircraft's original `<sensor name="navsat_sensor" type="navsat">`, including one inherited from a base model. Add this block directly inside the aircraft `<model>` containing `base_link`:
 
@@ -55,7 +108,7 @@ Set the world's `<spherical_coordinates>` to `EARTH_WGS84` with the same latitud
 
 The default topic is `/world/WORLD/model/MODEL/link/base_link/sensor/navsat_sensor/navsat`, matching PX4's standard subscription. Use `<topic>` to override it for custom or nested models. `antenna_offset` is in link-frame metres; `update_rate` is Hz. Restart the simulation after editing the SDF.
 
-## 3. Reception quality
+## Reception quality
 
 | `<quality>` | Behaviour |
 | --- | --- |
@@ -95,7 +148,7 @@ To change quality by location, add one or more zones inside the plugin:
 
 The last matching zone wins. Altitudes are absolute in the world's height datum, not above terrain. Outside all zones, the base quality applies. Zones can also set `elevation_mask_deg`; spoofing zones use the global spoofing schedule.
 
-## 4. Real satellite orbit data
+## Real satellite orbit data
 
 Without an almanac, the plugin uses a reproducible **synthetic 24-satellite GPS constellation**. To estimate visibility using real GPS orbit data, download a [CelesTrak Yuma almanac](https://celestrak.org/GPS/almanac/Yuma/) before the run:
 
@@ -113,7 +166,7 @@ The tool prints the absolute path and recommended epoch. Add both inside the plu
 
 The epoch is UTC Unix seconds at simulation time zero. Downloading data does not change it automatically; the default is 2026-01-01. Simulation time advances the satellite orbits, and unhealthy satellites are excluded. Missing, malformed or stale explicit files fail configuration; there is no silent synthetic fallback. If a file ages past the limit during a run, fixes become invalid. Save the generated `.yuma` and `.json` together for repeatability. Simulation itself needs no internet.
 
-## 5. PX4 / QGroundControl
+## PX4 / QGroundControl
 
 **Install the included PX4 bridge adapter to receive simulated satellite count and accuracy.** Stock PX4 supplies its own quality values. From this repository:
 
@@ -129,8 +182,40 @@ Launch your usual aircraft setup with the modified model, rebuilt PX4 and plugin
 
 The adapter uses quality metadata from the same NavSat packet and bypasses PX4's additional GPS noise for these samples. Ordinary NavSat messages retain PX4's existing behaviour. If quality remains fixed, check that you launched the rebuilt PX4 binary, removed the stock NavSat sensor and matched the subscribed topic. Plugin errors are prefixed with `[RealGpsSystem]`.
 
-## Limits and license
+## Limitations
 
 This simulates receiver output from satellite geometry and noise profiles. It supports GPS only, with approximate almanac orbits. It does not model live RF reception, RTK/base stations, other constellations or automatic terrain/building occlusion. Reception masks and zones approximate local conditions. Ground-station locations alone cannot determine local GPS accuracy. There is no geoid model; PX4 receives the same simulated height for MSL and ellipsoid altitude.
 
-BSD 3-Clause. See [LICENSE](LICENSE).
+## Tests and development
+
+Tests are available in a Git clone and excluded from release archives. They are
+enabled by default when the test sources are present. Use
+`-DBUILD_TESTING=OFF` with CMake to build only the plugin.
+
+For simulator-independent receiver, geometry, almanac and Python helper tests:
+
+```bash
+cmake -S . -B build-core -DBUILD_SIMULATOR=OFF \
+  -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build-core --parallel 2
+ctest --test-dir build-core --output-on-failure
+```
+
+To include the Gazebo server and transport smoke test, build the matching
+simulator target and run its tests:
+
+```bash
+JOBS=2 ./build.sh harmonic
+ctest --test-dir build-harmonic --output-on-failure
+```
+
+Replace `harmonic` with `jetty` for Jetty. The Python helpers use only the standard
+library; their tests can also run separately:
+
+```bash
+python3 -m unittest discover -s tests/python -v
+```
+
+## License
+
+BSD 3-Clause. Copyright (c) 2026 Xovium Tech. See [LICENSE](LICENSE).

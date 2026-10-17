@@ -1,0 +1,72 @@
+name: Build and test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install simulator-independent dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ python3
+      - name: Build and test without Gazebo
+        run: |
+          cmake -S . -B build-core -G Ninja -DBUILD_SIMULATOR=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-core --parallel 2
+          ctest --test-dir build-core --output-on-failure
+
+  gazebo:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [harmonic, jetty]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install selected Gazebo release
+        env:
+          DISTRO: ${{ matrix.distro }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl gnupg cmake ninja-build g++ python3
+          sudo curl -fsSL https://packages.osrfoundation.org/gazebo.gpg -o /usr/share/keyrings/gazebo-archive-keyring.gpg
+          echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/gazebo-archive-keyring.gpg] https://packages.osrfoundation.org/gazebo/ubuntu-stable noble main' | sudo tee /etc/apt/sources.list.d/gazebo-stable.list
+          sudo apt-get update
+          if [ "$DISTRO" = harmonic ]; then
+            sudo apt-get install -y gz-harmonic libgz-sim8-dev libgz-plugin2-dev libgz-transport13-dev
+          else
+            sudo apt-get install -y gz-jetty libgz-sim10-dev libgz-plugin4-dev libgz-transport15-dev
+          fi
+      - name: Build and run core, helper, and transport checks
+        env:
+          DISTRO: ${{ matrix.distro }}
+        run: |
+          cmake -S . -B "build-$DISTRO" -G Ninja -DGZ_DISTRO="$DISTRO" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "build-$DISTRO" --parallel 2
+          ctest --test-dir "build-$DISTRO" --output-on-failure
+      - name: Verify installed plugin
+        env:
+          DISTRO: ${{ matrix.distro }}
+        run: |
+          cmake --install "build-$DISTRO" --prefix "$RUNNER_TEMP/real-gps-install"
+          test -f "$RUNNER_TEMP/real-gps-install/lib/libRealGpsSystem.so"
+      - name: Build minimal source archive
+        env:
+          DISTRO: ${{ matrix.distro }}
+        run: |
+          mkdir source-archive
+          git archive --format=tar HEAD | tar -x -C source-archive
+          for excluded in .gitattributes .gitignore .github docs examples images tests; do
+            test ! -e "source-archive/$excluded"
+          done
+          cmake -S source-archive -B "build-archive-$DISTRO" -G Ninja -DGZ_DISTRO="$DISTRO" -DCMAKE_BUILD_TYPE=Release
+          grep -q '^BUILD_TESTING:BOOL=OFF$' "build-archive-$DISTRO/CMakeCache.txt"
+          cmake --build "build-archive-$DISTRO" --parallel 2

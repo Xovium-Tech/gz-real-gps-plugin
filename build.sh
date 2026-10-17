@@ -16,7 +16,7 @@ fi
 
 BUILD_DIR="$PLUGIN_ROOT/build-$DISTRO"
 cmake -S "$PLUGIN_ROOT" -B "$BUILD_DIR" \
-    -DGZ_DISTRO="$DISTRO" -DCMAKE_BUILD_TYPE=Release
+    -DGZ_DISTRO="$DISTRO" -DBUILD_SIMULATOR=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build "$BUILD_DIR" --parallel "$JOBS"
 
 printf '\nBuilt: %s/libRealGpsSystem.so\n\n' "$BUILD_DIR"
