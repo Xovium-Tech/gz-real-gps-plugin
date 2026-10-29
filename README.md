@@ -9,8 +9,8 @@ GPS receiver simulation for **Gazebo Harmonic and Jetty**, including PX4 fixed-w
 
 **Source-only distribution:** download the release ZIP and compile it on the
 computer running Gazebo. The archive contains source, headers, CMake files,
-`build.sh`, the Python runtime helpers, this README, and LICENSE. It excludes
-docs, images, examples, tests, CI files, and prebuilt libraries. GitHub's automatic
+`build.sh`, the Python runtime helpers, runnable examples, this README, and LICENSE. It excludes
+docs, images, tests, CI files, and prebuilt libraries. GitHub's automatic
 source ZIP/tar.gz downloads use the same exclusions. Python helpers download
 satellite orbit data and connect the quality output to PX4/QGroundControl.
 
@@ -156,6 +156,162 @@ To change quality by location, add one or more zones inside the plugin:
 ```
 
 The last matching zone wins. Altitudes are absolute in the world's height datum, not above terrain. Outside all zones, the base quality applies. Zones can also set `elevation_mask_deg`; spoofing zones use the global spoofing schedule.
+
+## Timestamped spoofing and GPS-denied scenarios
+
+Use a `<scenario>` inside the plugin to run a repeatable sequence without editing
+the model during flight. Reception quality and spoofing are independent: a
+receiver can report normal accuracy while its position is being displaced, or
+experience spoofing together with poor reception or an outage.
+
+```xml
+<quality>normal</quality>
+<seed>42</seed>
+<reacquisition_seconds>2</reacquisition_seconds>
+<scenario>
+  <event name="healthy">
+    <at_seconds>0</at_seconds>
+  </event>
+  <event name="low_spoof">
+    <at_seconds>30</at_seconds>
+    <transition_seconds>20</transition_seconds>
+    <spoofing_level>0.25</spoofing_level>
+    <offset_enu_m>200 100 20</offset_enu_m>
+  </event>
+  <event name="high_spoof">
+    <at_seconds>70</at_seconds>
+    <transition_seconds>20</transition_seconds>
+    <spoofing_level>1</spoofing_level>
+    <offset_enu_m>200 100 20</offset_enu_m>
+  </event>
+  <event name="recovery">
+    <at_seconds>110</at_seconds>
+    <transition_seconds>20</transition_seconds>
+  </event>
+  <event name="denied">
+    <at_seconds>150</at_seconds>
+    <quality>denied</quality>
+  </event>
+  <event name="restored">
+    <at_seconds>180</at_seconds>
+  </event>
+</scenario>
+```
+
+`spoofing_level` is a fraction from 0 to 1 of that event's `offset_enu_m`, rather
+than an RF power setting. Here low spoofing targets 50 m east, 25 m north and 5 m
+up; high spoofing targets 200 m east, 100 m north and 20 m up. Increase the offset
+to test larger displacements. The level, applied offset and noise scale change
+smoothly over `transition_seconds`. Velocity includes the derivative of the
+applied offset, making gradual position and velocity spoofing consistent. Set
+`spoof_velocity` to `false` to test a position-only attack with inconsistent
+velocity. A zero transition deliberately creates an immediate step.
+
+Every event defines a **complete target state**, rather than inheriting fields
+from the previous event. The recovery event above uses the default zero spoofing
+level and returns the previous bias smoothly to zero. Events hold their target
+until the next event; the final event holds indefinitely. Before the first
+event, normal receiver/zone settings apply.
+
+| Event field | Default | Meaning |
+| --- | --- | --- |
+| `at_seconds` | Required | World simulation timestamp in seconds. |
+| `transition_seconds` | `0` | Smooth transition of level, ENU bias and noise scale. |
+| `quality` | Base/zone quality | Optional `excellent`, `normal`, `poor` or `denied`; takes effect immediately at the timestamp. |
+| `spoofing_level` | `0` | Fraction of the target displacement, from 0 to 1. |
+| `offset_enu_m` | `200 0 0` | Full-level displacement in east, north and up metres. |
+| `spoof_velocity` | `true` | Add the derivative of the bias to reported velocity. |
+| `report_detection` | `false` | Simulate the receiver explicitly reporting detected spoofing. |
+| `report_jamming` | `false` | Simulate detected jamming during this event's denied reception or dropouts. |
+| `noise_scale` | `1` | Multiplier from 0 to 100 for position/velocity noise and reported uncertainty, subject to the reporting floors below. |
+| `dropout_period_seconds` | `0` | Period of repeated no-fix intervals; zero disables them. |
+| `dropout_duration_seconds` | `0` | No-fix duration at the beginning of each period, measured from this event's timestamp. |
+| `output_enabled` | `true` | Set false to suppress NavSat publication and exercise missing-sensor timeout handling. |
+
+`noise_scale=0` turns off random position and velocity error; configured spoofing
+biases still apply. Valid fixes retain reported accuracy floors of **0.01 m**
+for horizontal/vertical position and **0.001 m/s** for speed, including at very
+small positive noise scales. These conservative metadata floors add no random
+error and keep ideal test observations usable by PX4 and integrity checks that
+treat zero uncertainty as missing data.
+
+For intermittent reception, add an event such as:
+
+```xml
+<event name="intermittent">
+  <at_seconds>210</at_seconds>
+  <noise_scale>2</noise_scale>
+  <dropout_period_seconds>5</dropout_period_seconds>
+  <dropout_duration_seconds>1</dropout_duration_seconds>
+</event>
+```
+
+This loses the fix for one second every five seconds and doubles the noise
+outside those intervals. Both dropout fields must be positive together, with
+duration no greater than the period. An outage publishes invalid-fix metadata
+and holds the last fix; it does not silence the transport topic. The plugin-level
+`reacquisition_seconds` delays the return of a valid fix after reception becomes
+usable again. It defaults to zero for compatibility and does not delay the
+initial startup fix. A new outage restarts reacquisition. Consequently, short
+gaps between outages may never allow a fix to recover.
+
+For a transport blackout, set `<output_enabled>false</output_enabled>` in an
+event, followed by a later event with output enabled (the default). Unlike
+`quality=denied`, no NavSat packets are published during that interval. Internal
+receiver sampling continues, so this setting alone does not trigger receiver
+reacquisition; combine it with denied quality if both effects are needed.
+
+Timestamps must be nonnegative and strictly increasing. A transition must finish
+by the next timestamp, and its positive duration must produce a representable
+end timestamp. With `spoof_velocity=true`, a transition's peak injected velocity
+must not exceed **100000 m/s per axis**, the PX4 adapter's numeric limit; this
+includes transitions between offsets and recovery. Shorten the displacement or
+lengthen the transition if configuration rejects the resulting rate.
+Position-only attacks (`spoof_velocity=false`) and explicit zero-duration steps
+do not generate a velocity impulse. Event names must be unique; omitted names become
+`event_0`, `event_1`, and so on. Unknown or repeated event fields, empty scenarios,
+and invalid numeric values fail configuration with a `[RealGpsSystem]` error.
+Use either `<scenario>` or legacy `<spoofing>`. With a scenario, use
+`spoofing_level` instead of `quality=spoofing` in the base settings or zones.
+An event's explicit quality overrides zone quality; omitting it resumes the
+base/zone quality, including zone elevation masks. Zone membership always uses
+the true aircraft position. Events use world time even when the model enters a
+zone late; they are not zone-entry timers.
+
+Pausing Gazebo pauses the scenario. World reset or simulation-time rewind
+restarts the schedule and seeded noise. Replaying the same seed, world, sample
+times and trajectory reproduces the run; changing the update rate changes noise
+samples. A large time jump evaluates the current event without replaying missed
+events or publishing a catch-up burst.
+
+The runnable [example world](examples/gps-denied-scenario.sdf) includes gradual
+spoofing, recovery, intermittent reception, complete denial and a transport
+blackout. After building,
+start it from the repository root (replace `jetty` with `harmonic` as needed):
+
+```bash
+GZ_SIM_SYSTEM_PLUGIN_PATH="$PWD/build-jetty${GZ_SIM_SYSTEM_PLUGIN_PATH:+:$GZ_SIM_SYSTEM_PLUGIN_PATH}" \
+  gz sim -s -r examples/gps-denied-scenario.sdf
+```
+
+In another terminal, inspect receiver output with `gz topic -e -t /gps_demo/navsat`.
+The example uses a stationary receiver; copy its plugin settings into the
+aircraft model to test flight behavior.
+
+Each message includes `gnss.status`, `gnss.reacquiring` and diagnostics under
+`gnss.scenario.*`: `event_index`, `event_name`, `elapsed_seconds`,
+`spoofing_level`, `offset_east_m`/`offset_north_m`/`offset_up_m`,
+`velocity_east_mps`/`velocity_north_mps`/`velocity_up_mps`, `transitioning`,
+`dropout`, and `noise_scale`. Diagnostics preserve attack state during no-fix
+intervals and recovery; a transport blackout suppresses diagnostics together
+with the NavSat packets, so retain the scenario schedule for scoring that interval.
+They describe injected simulation truth, while
+`gnss.spoofing_state` and `gnss.jamming_state` describe what the simulated
+receiver reports. Those receiver reports stay unknown unless explicitly enabled.
+Use truth and scenario diagnostics for scoring detection latency, missed attacks
+and false alarms; do not feed them into a spoofing detector or navigation
+algorithm. The supplied PX4 adapter uses the receiver reports and keeps explicit
+ground-truth coordinates separate from noisy measurements.
 
 ## Real satellite orbit data
 

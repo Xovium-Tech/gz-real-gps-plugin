@@ -64,9 +64,12 @@ jobs:
         run: |
           mkdir source-archive
           git archive --format=tar HEAD | tar -x -C source-archive
-          for excluded in .gitattributes .gitignore .github docs examples images tests; do
+          for excluded in .gitattributes .gitignore .github docs images tests; do
             test ! -e "source-archive/$excluded"
           done
+          test -f source-archive/include/real_gps/core/Scenario.hh
+          test -f source-archive/src/core/Scenario.cc
+          test -f source-archive/examples/gps-denied-scenario.sdf
           cmake -S source-archive -B "build-archive-$DISTRO" -G Ninja -DGZ_DISTRO="$DISTRO" -DCMAKE_BUILD_TYPE=Release
           grep -q '^BUILD_TESTING:BOOL=OFF$' "build-archive-$DISTRO/CMakeCache.txt"
           cmake --build "build-archive-$DISTRO" --parallel 2

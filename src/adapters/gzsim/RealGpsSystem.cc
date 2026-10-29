@@ -5,12 +5,14 @@
 #include <chrono>
 #include <cmath>
 #include <iomanip>
+#include <initializer_list>
 #include <limits>
 #include <locale>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <gz/common/Console.hh>
 #include <gz/msgs/navsat.pb.h>
 #include <gz/plugin/Register.hh>
@@ -36,6 +38,57 @@ T Read(const sdf::ElementPtr &element, const std::string &name, const T &fallbac
   const auto result = element->Get<T>(name, fallback);
   if (!result.second) throw std::invalid_argument("Invalid <" + name + "> value");
   return result.first;
+}
+
+void CheckChildren(const sdf::ElementPtr &element,
+                   std::initializer_list<std::string> allowed)
+{
+  for (auto child = element->GetFirstElement(); child; child = child->GetNextElement())
+  {
+    bool known = false;
+    for (const auto &name : allowed) known = known || child->GetName() == name;
+    if (!known)
+      throw std::invalid_argument("Unknown <" + child->GetName() + "> inside <" +
+                                  element->GetName() + ">");
+    if (element->GetName() == "event" && child->GetNextElement(child->GetName()))
+      throw std::invalid_argument("Duplicate <" + child->GetName() + "> inside <event>");
+  }
+}
+
+std::vector<core::ScenarioEvent> ReadScenario(const sdf::ElementPtr &element)
+{
+  CheckChildren(element, {"event"});
+  if (!element->HasElement("event"))
+    throw std::invalid_argument("<scenario> requires at least one <event>");
+  std::vector<core::ScenarioEvent> events;
+  for (auto event = element->GetElement("event"); event;
+       event = event->GetNextElement("event"))
+  {
+    CheckChildren(event, {"at_seconds", "transition_seconds", "quality", "spoofing_level",
+                         "offset_enu_m", "spoof_velocity", "report_detection", "report_jamming",
+                         "noise_scale", "dropout_period_seconds", "dropout_duration_seconds",
+                         "output_enabled"});
+    if (!event->HasElement("at_seconds"))
+      throw std::invalid_argument("Every scenario event requires <at_seconds>");
+    core::ScenarioEvent target;
+    if (const auto name = event->GetAttribute("name")) target.name = name->GetAsString();
+    target.atSeconds = Read<double>(event, "at_seconds", 0.0);
+    target.transitionSeconds = Read<double>(event, "transition_seconds", target.transitionSeconds);
+    if (event->HasElement("quality"))
+      target.quality = core::ParseQuality(Read<std::string>(event, "quality", "normal"));
+    target.spoofingLevel = Read<double>(event, "spoofing_level", target.spoofingLevel);
+    const auto offset = Read<gz::math::Vector3d>(event, "offset_enu_m", {200, 0, 0});
+    target.spoofOffsetEnuM = {offset.X(), offset.Y(), offset.Z()};
+    target.spoofVelocity = Read<bool>(event, "spoof_velocity", target.spoofVelocity);
+    target.reportDetection = Read<bool>(event, "report_detection", target.reportDetection);
+    target.reportJamming = Read<bool>(event, "report_jamming", target.reportJamming);
+    target.outputEnabled = Read<bool>(event, "output_enabled", target.outputEnabled);
+    target.noiseScale = Read<double>(event, "noise_scale", target.noiseScale);
+    target.dropoutPeriodSeconds = Read<double>(event, "dropout_period_seconds", 0.0);
+    target.dropoutDurationSeconds = Read<double>(event, "dropout_duration_seconds", 0.0);
+    events.push_back(std::move(target));
+  }
+  return events;
 }
 
 template <typename T>
@@ -84,16 +137,26 @@ class RealGpsSystem final : public gz::sim::System,
       config_.maxAlmanacAgeDays = Read<double>(config, "max_almanac_age_days", config_.maxAlmanacAgeDays);
       config_.elevationMaskDeg = Read<double>(config, "elevation_mask_deg", config_.elevationMaskDeg);
       config_.noiseCorrelationSeconds = Read<double>(config, "noise_correlation_seconds", config_.noiseCorrelationSeconds);
+      config_.reacquisitionSeconds = Read<double>(config, "reacquisition_seconds", config_.reacquisitionSeconds);
       antennaOffset_ = Read<gz::math::Vector3d>(config, "antenna_offset", gz::math::Vector3d::Zero);
       if (!antennaOffset_.IsFinite()) throw std::invalid_argument("antenna_offset must be finite");
       if (config->HasElement("spoofing"))
       {
+        if (config->HasElement("scenario"))
+          throw std::invalid_argument("Use either <scenario> or legacy <spoofing>, not both");
         auto spoof = config->GetElement("spoofing");
         config_.spoofStartSeconds = Read<double>(spoof, "start_seconds", config_.spoofStartSeconds);
         config_.spoofRampSeconds = Read<double>(spoof, "ramp_seconds", config_.spoofRampSeconds);
         const auto offset = Read<gz::math::Vector3d>(spoof, "offset_enu_m", {200, 0, 0});
         config_.spoofOffsetEnuM = {offset.X(), offset.Y(), offset.Z()};
         reportSpoofing_ = Read<bool>(spoof, "report_detection", false);
+      }
+      if (config->HasElement("scenario"))
+      {
+        const auto scenario = config->GetElement("scenario");
+        if (scenario->GetNextElement("scenario"))
+          throw std::invalid_argument("Only one <scenario> is allowed");
+        config_.scenario = ReadScenario(scenario);
       }
       if (config->HasElement("zone"))
       {
@@ -230,9 +293,28 @@ class RealGpsSystem final : public gz::sim::System,
         ? std::atan2(fix.speedAccuracyMps, std::hypot(fix.velocityEnuMps.x, fix.velocityEnuMps.y))
         : 3.14159265358979323846);
       Metadata(message, "gnss.time_utc_usec", static_cast<std::uint64_t>((config_.epochUnixSeconds + now) * 1e6));
-      Metadata(message, "gnss.spoofing_state", reportSpoofing_ && fix.spoofing ? 3 : 0);
+      const bool reportSpoofing = config_.scenario.empty() ? reportSpoofing_ :
+                                  fix.scenario.reportDetection;
+      Metadata(message, "gnss.spoofing_state", reportSpoofing && fix.spoofing ? 3 : 0);
+      Metadata(message, "gnss.jamming_state", fix.scenario.reportJamming &&
+        (fix.quality == core::Quality::Denied || fix.scenario.dropout) ? 3 : 0);
       Metadata(message, "gnss.quality", core::QualityName(fix.quality));
       Metadata(message, "gnss.spoofing_active", fix.spoofing ? 1 : 0);
+      Metadata(message, "gnss.status", fix.status);
+      Metadata(message, "gnss.reacquiring", fix.reacquiring ? 1 : 0);
+      Metadata(message, "gnss.scenario.event_index", fix.scenario.eventIndex);
+      Metadata(message, "gnss.scenario.event_name", fix.scenario.eventName);
+      Metadata(message, "gnss.scenario.elapsed_seconds", fix.scenario.eventElapsedSeconds);
+      Metadata(message, "gnss.scenario.spoofing_level", fix.scenario.spoofingLevel);
+      Metadata(message, "gnss.scenario.offset_east_m", fix.scenario.offsetEnuM.x);
+      Metadata(message, "gnss.scenario.offset_north_m", fix.scenario.offsetEnuM.y);
+      Metadata(message, "gnss.scenario.offset_up_m", fix.scenario.offsetEnuM.z);
+      Metadata(message, "gnss.scenario.velocity_east_mps", fix.scenario.velocityOffsetEnuMps.x);
+      Metadata(message, "gnss.scenario.velocity_north_mps", fix.scenario.velocityOffsetEnuMps.y);
+      Metadata(message, "gnss.scenario.velocity_up_mps", fix.scenario.velocityOffsetEnuMps.z);
+      Metadata(message, "gnss.scenario.transitioning", fix.scenario.transitioning ? 1 : 0);
+      Metadata(message, "gnss.scenario.dropout", fix.scenario.dropout ? 1 : 0);
+      Metadata(message, "gnss.scenario.noise_scale", fix.scenario.noiseScale);
       Metadata(message, "gnss.source", receiver_->Source());
       Metadata(message, "gnss.almanac_age_seconds", receiver_->AlmanacAgeSeconds(now));
       Metadata(message, "gnss.truth_latitude_deg", lla.X());
@@ -241,7 +323,7 @@ class RealGpsSystem final : public gz::sim::System,
       Metadata(message, "gnss.truth_velocity_east", velocity.X());
       Metadata(message, "gnss.truth_velocity_north", velocity.Y());
       Metadata(message, "gnss.truth_velocity_up", velocity.Z());
-      publisher_.Publish(message);
+      if (fix.scenario.outputEnabled) publisher_.Publish(message);
     }
     catch (const std::exception &error)
     {

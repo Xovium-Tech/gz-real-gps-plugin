@@ -1,0 +1,70 @@
+<?xml version="1.0"?>
+<!-- Run from this checkout: GZ_SIM_SYSTEM_PLUGIN_PATH="$PWD/build-jetty" gz sim -s -r examples/gps-denied-scenario.sdf -->
+<sdf version="1.9">
+  <world name="gps_denied_scenario">
+    <physics name="default" type="ignored">
+      <max_step_size>0.01</max_step_size>
+      <real_time_factor>1</real_time_factor>
+    </physics>
+    <spherical_coordinates>
+      <surface_model>EARTH_WGS84</surface_model>
+      <latitude_deg>52.23</latitude_deg>
+      <longitude_deg>21.02</longitude_deg>
+      <elevation>100</elevation>
+      <heading_deg>0</heading_deg>
+    </spherical_coordinates>
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <model name="receiver">
+      <static>true</static>
+      <link name="base_link"/>
+      <plugin filename="libRealGpsSystem.so" name="real_gps::RealGpsSystem">
+        <topic>/gps_demo/navsat</topic>
+        <quality>normal</quality>
+        <seed>42</seed>
+        <update_rate>5</update_rate>
+        <reacquisition_seconds>2</reacquisition_seconds>
+        <scenario>
+          <event name="healthy">
+            <at_seconds>0</at_seconds>
+          </event>
+          <event name="gentle_spoof">
+            <at_seconds>30</at_seconds>
+            <transition_seconds>20</transition_seconds>
+            <spoofing_level>0.25</spoofing_level>
+            <offset_enu_m>100 -50 10</offset_enu_m>
+          </event>
+          <event name="strong_spoof">
+            <at_seconds>70</at_seconds>
+            <transition_seconds>20</transition_seconds>
+            <spoofing_level>1</spoofing_level>
+            <offset_enu_m>100 -50 10</offset_enu_m>
+          </event>
+          <event name="gradual_recovery">
+            <at_seconds>110</at_seconds>
+            <transition_seconds>20</transition_seconds>
+          </event>
+          <event name="intermittent_reception">
+            <at_seconds>150</at_seconds>
+            <noise_scale>2</noise_scale>
+            <dropout_period_seconds>5</dropout_period_seconds>
+            <dropout_duration_seconds>1</dropout_duration_seconds>
+          </event>
+          <event name="gps_denied">
+            <at_seconds>180</at_seconds>
+            <quality>denied</quality>
+          </event>
+          <event name="reception_restored">
+            <at_seconds>210</at_seconds>
+          </event>
+          <event name="transport_blackout">
+            <at_seconds>230</at_seconds>
+            <output_enabled>false</output_enabled>
+          </event>
+          <event name="output_restored">
+            <at_seconds>245</at_seconds>
+          </event>
+        </scenario>
+      </plugin>
+    </model>
+  </world>
+</sdf>

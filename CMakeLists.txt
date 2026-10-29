@@ -6,6 +6,7 @@ option(BUILD_SIMULATOR "Build the Gazebo system plugin" ON)
 
 add_library(real_gps_core STATIC
   src/core/Receiver.cc
+  src/core/Scenario.cc
   src/core/Almanac.cc
   src/core/Geometry.cc
 )

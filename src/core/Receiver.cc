@@ -74,7 +74,8 @@ std::string QualityName(Quality quality)
   throw std::invalid_argument("Invalid GPS quality enum");
 }
 
-Receiver::Receiver(Config config) : config_(std::move(config)), generator_(config_.seed)
+Receiver::Receiver(Config config)
+  : config_(std::move(config)), scenario_(config_.scenario), generator_(config_.seed)
 {
   QualityName(config_.quality);
   if (!std::isfinite(config_.epochUnixSeconds) || config_.epochUnixSeconds < kGpsEpochUnixSeconds ||
@@ -85,12 +86,17 @@ Receiver::Receiver(Config config) : config_(std::move(config)), generator_(confi
       !std::isfinite(config_.noiseCorrelationSeconds) || config_.noiseCorrelationSeconds <= 0.0 ||
       !std::isfinite(config_.spoofStartSeconds) || config_.spoofStartSeconds < 0.0 ||
       !std::isfinite(config_.spoofRampSeconds) || config_.spoofRampSeconds <= 0.0 ||
-      !Finite(config_.spoofOffsetEnuM) || !std::isfinite(config_.maxAlmanacAgeDays))
+      !Finite(config_.spoofOffsetEnuM) || !std::isfinite(config_.maxAlmanacAgeDays) ||
+      !std::isfinite(config_.reacquisitionSeconds) || config_.reacquisitionSeconds < 0.0)
     throw std::invalid_argument("Invalid GNSS receiver configuration");
+  if (!scenario_.Empty() && config_.quality == Quality::Spoofing)
+    throw std::invalid_argument("Use scenario spoofing_level with a reception quality, not quality=spoofing");
   for (const auto &zone : config_.zones)
   {
     CheckGeodetic(zone.latitudeDeg, zone.longitudeDeg, zone.minAltitudeM);
     QualityName(zone.quality);
+    if (!scenario_.Empty() && zone.quality == Quality::Spoofing)
+      throw std::invalid_argument("Scenario timelines cannot be combined with legacy spoofing zones");
     if (!std::isfinite(zone.radiusM) || zone.radiusM <= 0.0 ||
         !std::isfinite(zone.maxAltitudeM) || zone.maxAltitudeM < zone.minAltitudeM ||
         !std::isfinite(zone.elevationMaskDeg) || zone.elevationMaskDeg < -1.0 ||
@@ -123,6 +129,8 @@ void Receiver::Reset()
   lastTime_ = std::numeric_limits<double>::quiet_NaN();
   lastMeasurement_ = {};
   hasFix_ = false;
+  receptionLost_ = false;
+  reacquireUntil_ = 0.0;
 }
 
 double Receiver::AlmanacAgeSeconds(double simulationSeconds) const
@@ -164,6 +172,7 @@ Measurement Receiver::Sample(double simulationSeconds, double lat, double lon,
   lastTime_ = simulationSeconds;
 
   Measurement m;
+  m.scenario = scenario_.Evaluate(simulationSeconds);
   m.quality = config_.quality;
   double mask = config_.elevationMaskDeg;
   // Last matching zone wins, allowing a small denied region within a poor region.
@@ -175,6 +184,31 @@ Measurement Receiver::Sample(double simulationSeconds, double lat, double lon,
       m.quality = zone.quality;
       mask = zone.elevationMaskDeg >= 0.0 ? zone.elevationMaskDeg : config_.elevationMaskDeg;
     }
+  }
+  if (m.scenario.quality) m.quality = *m.scenario.quality;
+  // Evaluate attack state independently of reception. Test diagnostics must not
+  // claim an attack stopped just because denial or bad geometry removed the fix.
+  if (!scenario_.Empty())
+  {
+    m.spoofing = m.scenario.spoofing;
+  }
+  else if (m.quality == Quality::Spoofing && simulationSeconds >= config_.spoofStartSeconds)
+  {
+    m.spoofing = true;
+    const double u = std::clamp((simulationSeconds - config_.spoofStartSeconds) /
+                               config_.spoofRampSeconds, 0.0, 1.0);
+    const double fraction = u * u * (3.0 - 2.0 * u);
+    const double derivative = (u > 0.0 && u < 1.0) ?
+        6.0 * u * (1.0 - u) / config_.spoofRampSeconds : 0.0;
+    m.scenario.spoofing = true;
+    m.scenario.spoofingLevel = fraction;
+    m.scenario.transitioning = u < 1.0;
+    m.scenario.offsetEnuM = {config_.spoofOffsetEnuM.x * fraction,
+                           config_.spoofOffsetEnuM.y * fraction,
+                           config_.spoofOffsetEnuM.z * fraction};
+    m.scenario.velocityOffsetEnuMps = {config_.spoofOffsetEnuM.x * derivative,
+                                     config_.spoofOffsetEnuM.y * derivative,
+                                     config_.spoofOffsetEnuM.z * derivative};
   }
   const double usedMask = std::min(90.0, mask + (m.quality == Quality::Poor ? 15.0 : 0.0));
   const Vec3 receiver = GeodeticToEcef(lat, lon, alt);
@@ -198,11 +232,27 @@ Measurement Receiver::Sample(double simulationSeconds, double lat, double lon,
   }
   const bool stale = !config_.almanacPath.empty() && config_.maxAlmanacAgeDays > 0.0 &&
       AlmanacAgeSeconds(simulationSeconds) > config_.maxAlmanacAgeDays * kDaySeconds;
-  if (stale)
+  if (stale || m.scenario.dropout)
     usedDirections.clear();
   m.satellitesUsed = static_cast<unsigned int>(usedDirections.size());
   const auto dop = ComputeDop(usedDirections);
   if (!dop.valid)
+  {
+    receptionLost_ = true;
+    m.status = m.quality == Quality::Denied ? "denied" :
+        m.scenario.dropout ? "dropout" : stale ? "stale_almanac" : "insufficient_geometry";
+  }
+  else
+  {
+    if (receptionLost_)
+    {
+      receptionLost_ = false;
+      reacquireUntil_ = simulationSeconds + config_.reacquisitionSeconds;
+    }
+    m.reacquiring = simulationSeconds < reacquireUntil_;
+    m.status = m.reacquiring ? "reacquiring" : "ok";
+  }
+  if (!dop.valid || m.reacquiring)
   {
     m.latitudeDeg = hasFix_ ? lastMeasurement_.latitudeDeg : lat;
     m.longitudeDeg = hasFix_ ? lastMeasurement_.longitudeDeg : lon;
@@ -224,34 +274,29 @@ Measurement Receiver::Sample(double simulationSeconds, double lat, double lon,
     rangeSigma = 6.0;
     rangeRateSigma = 0.3;
   }
+  rangeSigma *= m.scenario.noiseScale;
+  rangeRateSigma *= m.scenario.noiseScale;
   Vec3 positionError = ScaleCovariance(dop, positionNoise_, rangeSigma);
   Vec3 velocityError = ScaleCovariance(dop, velocityNoise_, rangeRateSigma);
-  if (m.quality == Quality::Spoofing && simulationSeconds >= config_.spoofStartSeconds)
-  {
-    m.spoofing = true;
-    const double u = std::clamp((simulationSeconds - config_.spoofStartSeconds) /
-                               config_.spoofRampSeconds, 0.0, 1.0);
-    const double fraction = u * u * (3.0 - 2.0 * u);
-    const double derivative = (u > 0.0 && u < 1.0) ?
-        6.0 * u * (1.0 - u) / config_.spoofRampSeconds : 0.0;
-    positionError.x += config_.spoofOffsetEnuM.x * fraction;
-    positionError.y += config_.spoofOffsetEnuM.y * fraction;
-    positionError.z += config_.spoofOffsetEnuM.z * fraction;
-    velocityError.x += config_.spoofOffsetEnuM.x * derivative;
-    velocityError.y += config_.spoofOffsetEnuM.y * derivative;
-    velocityError.z += config_.spoofOffsetEnuM.z * derivative;
-  }
+  positionError.x += m.scenario.offsetEnuM.x;
+  positionError.y += m.scenario.offsetEnuM.y;
+  positionError.z += m.scenario.offsetEnuM.z;
+  velocityError.x += m.scenario.velocityOffsetEnuMps.x;
+  velocityError.y += m.scenario.velocityOffsetEnuMps.y;
+  velocityError.z += m.scenario.velocityOffsetEnuMps.z;
   const auto position = OffsetGeodetic({lat, lon, alt}, positionError);
   m.latitudeDeg = position.latitudeDeg;
   m.longitudeDeg = position.longitudeDeg;
   m.altitudeM = position.altitudeM;
   m.velocityEnuMps = {trueVelocity.x + velocityError.x, trueVelocity.y + velocityError.y,
                      trueVelocity.z + velocityError.z};
-  m.ephM = rangeSigma * dop.hdop;
-  m.epvM = rangeSigma * dop.vdop;
+  // Keep ideal/noiseless test fixes usable by consumers that interpret zero
+  // uncertainty as missing metadata. These reporting floors do not add noise.
+  m.ephM = std::max(0.01, rangeSigma * dop.hdop);
+  m.epvM = std::max(0.01, rangeSigma * dop.vdop);
   m.hdop = dop.hdop;
   m.vdop = dop.vdop;
-  m.speedAccuracyMps = rangeRateSigma * dop.pdop;
+  m.speedAccuracyMps = std::max(0.001, rangeRateSigma * dop.pdop);
   m.fixType = 3;
   m.valid = true;
   hasFix_ = true;

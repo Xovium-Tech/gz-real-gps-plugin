@@ -7,13 +7,10 @@
 #include <vector>
 
 #include "real_gps/core/Almanac.hh"
+#include "real_gps/core/Scenario.hh"
 
 namespace real_gps::core
 {
-enum class Quality { Excellent, Normal, Poor, Spoofing, Denied };
-Quality ParseQuality(const std::string &name);
-std::string QualityName(Quality quality);
-
 struct DegradationZone
 {
   double latitudeDeg{0.0};
@@ -43,6 +40,9 @@ struct Config
   // Applies only to files. A nonpositive value explicitly allows stale almanacs.
   double maxAlmanacAgeDays{14.0};
   std::vector<DegradationZone> zones;
+  std::vector<ScenarioEvent> scenario;
+  // Delay from the first usable post-outage sample until a fix is published.
+  double reacquisitionSeconds{0.0};
 };
 
 struct Measurement
@@ -62,6 +62,9 @@ struct Measurement
   bool valid{false};
   bool spoofing{false};
   Quality quality{Quality::Normal};
+  ScenarioState scenario;
+  bool reacquiring{false};
+  std::string status{"no_fix"};
 };
 
 class Receiver
@@ -77,6 +80,7 @@ class Receiver
 
  private:
   Config config_;
+  Scenario scenario_;
   std::vector<SatelliteAlmanac> satellites_;
   std::string source_;
   std::mt19937_64 generator_;
@@ -86,5 +90,7 @@ class Receiver
   double lastTime_{std::numeric_limits<double>::quiet_NaN()};
   Measurement lastMeasurement_;
   bool hasFix_{false};
+  bool receptionLost_{false};
+  double reacquireUntil_{0.0};
 };
 }  // namespace real_gps::core

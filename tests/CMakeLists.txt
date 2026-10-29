@@ -3,6 +3,11 @@ target_link_libraries(real_gps_core_test PRIVATE real_gps_core)
 target_compile_options(real_gps_core_test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME receiver_core COMMAND real_gps_core_test)
 
+add_executable(real_gps_scenario_test Scenario_TEST.cc)
+target_link_libraries(real_gps_scenario_test PRIVATE real_gps_core)
+target_compile_options(real_gps_scenario_test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME receiver_scenarios COMMAND real_gps_scenario_test)
+
 add_test(NAME backend_validation COMMAND ${CMAKE_COMMAND}
   -DSOURCE_ROOT=${PROJECT_SOURCE_DIR}
   -DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/backend
