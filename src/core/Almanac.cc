@@ -1,6 +1,7 @@
 #include "real_gps/core/Almanac.hh"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <fstream>
@@ -155,8 +156,15 @@ std::vector<SatelliteAlmanac> SyntheticGpsConstellation(double referenceGpsSecon
 {
   const int week = static_cast<int>(std::floor(referenceGpsSeconds / kGpsWeekSeconds));
   const double toa = referenceGpsSeconds - week * kGpsWeekSeconds;
+  // Eight synthetic orbital planes with four satellites each. Staggered phase
+  // offsets avoid the poor geometry of the former 24-satellite layout, which
+  // exceeded PX4's default PDOP limit at McMillan even with normal reception.
+  // These are simulation slots, not the operational GPS constellation. Keep
+  // DOP and measurement covariance derived from the actual sight lines.
+  constexpr std::array<double, 8> phaseDegrees{0, 35, 70, 100, 140, 165, 200, 240};
   std::vector<SatelliteAlmanac> result;
-  for (int plane = 0; plane < 6; ++plane)
+  result.reserve(32);
+  for (std::size_t plane = 0; plane < phaseDegrees.size(); ++plane)
   {
     for (int slot = 0; slot < 4; ++slot)
     {
@@ -166,9 +174,9 @@ std::vector<SatelliteAlmanac> SyntheticGpsConstellation(double referenceGpsSecon
       s.timeOfApplicabilitySeconds = toa;
       s.inclinationRad = 55.0 * kPi / 180.0;
       s.sqrtSemiMajorAxis = std::sqrt(26560000.0);
-      s.rightAscensionAtWeekRad = plane * kPi / 3.0 + kEarthRotationRadPerSec * toa;
+      s.rightAscensionAtWeekRad = plane * kPi / 4.0 + kEarthRotationRadPerSec * toa;
       s.rightAscensionRateRadPerSec = -8.0e-9;
-      s.meanAnomalyRad = slot * kPi / 2.0 + plane * kPi / 6.0;
+      s.meanAnomalyRad = slot * kPi / 2.0 + phaseDegrees[plane] * kPi / 180.0;
       result.push_back(s);
     }
   }

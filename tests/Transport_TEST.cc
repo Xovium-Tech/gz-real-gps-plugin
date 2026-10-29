@@ -123,8 +123,11 @@ int main()
     const auto fields = Metadata(fix);
     Check(fields.at("gnss.schema_version") == "1", "Metadata schema");
     Check(fields.at("gnss.source") == "synthetic_gps", "Explicit synthetic source metadata");
-    Check(fields.at("gnss.fix_type") == "3" && std::stoi(fields.at("gnss.satellites_used")) >= 4,
-          "Normal model must publish a 3D fix");
+    Check(fields.at("gnss.fix_type") == "3" && std::stoi(fields.at("gnss.satellites_used")) >= 6,
+          "Normal model must publish a 3D fix with enough satellites for PX4");
+    Check(std::hypot(std::stod(fields.at("gnss.hdop")),
+                     std::stod(fields.at("gnss.vdop"))) <= 2.5,
+          "Normal NavSat metadata must meet PX4's default PDOP limit");
     Check(fields.at("gnss.quality") == "normal", "Normal reception metadata");
     Check(std::stod(fields.at("gnss.eph")) > 0 && std::stod(fields.at("gnss.eph")) < 100,
           "Reported horizontal accuracy");

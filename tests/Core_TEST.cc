@@ -141,7 +141,8 @@ void Almanac()
     const auto p = SatellitePositionEcef(satellite, epoch + 1000000);
     Near(std::hypot(std::hypot(p.x, p.y), p.z), 26560000, 1e-6, "Synthetic orbit radius");
   }
-  Check(constellation.size() == 24 && prns.size() == 24, "Unique synthetic constellation");
+  Check(constellation.size() == 32 && prns.size() == 32 && *prns.begin() == 1 &&
+        *prns.rbegin() == 32, "Unique synthetic constellation within GPS PRN range");
 }
 
 Measurement Sample(Receiver &receiver, double time)
@@ -159,6 +160,37 @@ void SameFix(const Measurement &left, const Measurement &right)
   Near(left.velocityEnuMps.z, right.velocityEnuMps.z, 0, "Reproducible up velocity");
   Check(left.fixType == right.fixType && left.satellitesUsed == right.satellitesUsed,
         "Reproducible fix status");
+}
+
+void Px4DefaultGeometry()
+{
+  // A receiver-level 3D fix is insufficient: PX4 also checks satellite count,
+  // PDOP and reported accuracy. Cover a full day, including satellite rise/set,
+  // at McMillan (the reported regression), Warsaw, Zurich and the equator.
+  for (const Geodetic location : {Geodetic{35.716880, -120.764640, 280.396},
+                                  {52.23, 21.02, 100},
+                                  {47.397742, 8.545594, 488}, {0, 0, 0}})
+  {
+    Config config;
+    config.seed = 42;
+    Receiver receiver(config);
+    const auto check = [&](double time)
+    {
+      const auto fix = receiver.Sample(time, location.latitudeDeg,
+                                      location.longitudeDeg, location.altitudeM, {});
+      const std::string context = " at latitude " + std::to_string(location.latitudeDeg) +
+                                  ", t=" + std::to_string(time);
+      Check(fix.valid && fix.fixType == 3 && fix.satellitesUsed >= 6,
+            "Default receiver must meet PX4 fix/satellite requirements" + context);
+      Check(std::hypot(fix.hdop, fix.vdop) <= 2.5,
+            "Default receiver must meet PX4 EKF2_REQ_PDOP=2.5" + context);
+      Check(fix.ephM <= 3.0 && fix.epvM <= 5.0 && fix.speedAccuracyMps <= 0.5,
+            "Default receiver must meet PX4 reported-accuracy requirements" + context);
+    };
+    // Native 5 Hz during initialization, then 1 Hz through the rest of the day.
+    for (int sample = 0; sample <= 3000; ++sample) check(sample / 5.0);
+    for (int second = 601; second <= 86400; ++second) check(second);
+  }
 }
 
 void ReceiverBehavior()
@@ -273,6 +305,7 @@ int main()
   {
     Geometry();
     Almanac();
+    Px4DefaultGeometry();
     ReceiverBehavior();
     AlmanacAge();
     std::cout << "Geometry, almanac parsing, receiver behavior and stale-data protection passed\n";

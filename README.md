@@ -120,6 +120,15 @@ The default topic is `/world/WORLD/model/MODEL/link/base_link/sensor/navsat_sens
 
 Accuracy depends on satellite geometry; these values are not fixed position-accuracy outputs. Fewer than four usable satellites produces no fix. Aliases `gps_spoofing`, `gps-spoofing` and `jamming` are also accepted.
 
+The default synthetic constellation is tested with `normal` reception against
+PX4's PDOP limit of 2.5 for a full simulated day at McMillan, Warsaw, Zurich and
+the equator, using the default 10-degree elevation mask. It also meets the default
+satellite-count and reported-accuracy limits in those checks. Geometry is shared
+by `normal`, `excellent` and `spoofing`; quality changes the receiver noise.
+Other locations, higher masks, degradation zones or real almanacs can still
+produce poor geometry. PX4's stationary-drift and other navigation checks remain
+independent, so a 3D receiver fix alone does not guarantee navigation or home readiness.
+
 For `spoofing`, add this inside the plugin:
 
 ```xml
@@ -150,7 +159,15 @@ The last matching zone wins. Altitudes are absolute in the world's height datum,
 
 ## Real satellite orbit data
 
-Without an almanac, the plugin uses a reproducible **synthetic 24-satellite GPS constellation**. To estimate visibility using real GPS orbit data, download a [CelesTrak Yuma almanac](https://celestrak.org/GPS/almanac/Yuma/) before the run:
+Without an almanac, the plugin uses a reproducible **synthetic 32-satellite constellation**
+with GPS-like orbital radius and inclination. Its eight planes and staggered
+satellite phases provide an open-sky simulation baseline, not the operational GPS
+orbital layout. This replaces the previous 24-satellite fallback, so seeded runs
+using the fallback have different geometry and noise-scaled measurements. PDOP is
+computed from visible satellites without clamping; explicit Yuma files retain
+their own orbital geometry.
+
+To estimate visibility using real GPS orbit data, download a [CelesTrak Yuma almanac](https://celestrak.org/GPS/almanac/Yuma/) before the run:
 
 ```bash
 python3 scripts/fetch_almanac.py --output "$PWD/data/gps-latest.yuma"

@@ -34,7 +34,7 @@ std::vector<SatelliteAlmanac> ParseYumaAlmanac(std::istream &input,
                                             double referenceGpsSeconds);
 std::vector<SatelliteAlmanac> LoadYumaAlmanac(const std::string &path,
                                            double referenceGpsSeconds);
-// Explicitly synthetic 24-satellite constellation; never live orbit data.
+// Explicitly synthetic 32-satellite constellation; never live orbit data.
 std::vector<SatelliteAlmanac> SyntheticGpsConstellation(double referenceGpsSeconds);
 Vec3 SatellitePositionEcef(const SatelliteAlmanac &satellite, double gpsSeconds);
 }  // namespace real_gps::core
