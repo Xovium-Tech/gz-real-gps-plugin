@@ -9,8 +9,8 @@ GPS receiver simulation for **Gazebo Harmonic and Jetty**, including PX4 fixed-w
 
 **Source-only distribution:** download the release ZIP and compile it on the
 computer running Gazebo. The archive contains source, headers, CMake files,
-`build.sh`, the Python runtime helpers, runnable examples, this README, and LICENSE. It excludes
-docs, images, tests, CI files, and prebuilt libraries. GitHub's automatic
+`build.sh`, the Python runtime helpers, this README, and LICENSE. It excludes
+docs, images, videos, examples, tests, CI files, binaries, build outputs, and caches. GitHub's automatic
 source ZIP/tar.gz downloads use the same exclusions. Python helpers download
 satellite orbit data and connect the quality output to PX4/QGroundControl.
 
@@ -284,10 +284,12 @@ times and trajectory reproduces the run; changing the update rate changes noise
 samples. A large time jump evaluates the current event without replaying missed
 events or publishing a catch-up burst.
 
-The runnable [example world](examples/gps-denied-scenario.sdf) includes gradual
-spoofing, recovery, intermittent reception, complete denial and a transport
-blackout. After building,
-start it from the repository root (replace `jetty` with `harmonic` as needed):
+An optional [example world on GitHub](https://github.com/Xovium-Tech/gz-real-gps-plugin/blob/main/examples/gps-denied-scenario.sdf)
+includes gradual spoofing, recovery, intermittent reception, complete denial
+and a transport blackout. Examples stay in Git and are excluded from release
+archives; the plugin configuration above can be used directly in your aircraft
+model. From a Git checkout, build the plugin and run the example from the
+repository root (replace `jetty` with `harmonic` as needed):
 
 ```bash
 GZ_SIM_SYSTEM_PLUGIN_PATH="$PWD/build-jetty${GZ_SIM_SYSTEM_PLUGIN_PATH:+:$GZ_SIM_SYSTEM_PLUGIN_PATH}" \

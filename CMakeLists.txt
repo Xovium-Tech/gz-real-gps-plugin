@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(gz_real_gps_plugin VERSION 0.2.0 LANGUAGES CXX)
+project(gz_real_gps_plugin VERSION 0.2.1 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 option(BUILD_SIMULATOR "Build the Gazebo system plugin" ON)

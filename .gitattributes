@@ -3,5 +3,6 @@
 /.gitignore export-ignore
 /.github export-ignore
 /docs export-ignore
+/examples export-ignore
 /images export-ignore
 /tests export-ignore
