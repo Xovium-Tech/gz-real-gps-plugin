@@ -53,7 +53,7 @@ struct Measurement
   Vec3 velocityEnuMps;
   unsigned int satellitesVisible{0};
   unsigned int satellitesUsed{0};
-  unsigned int fixType{1};  // MAVLink/PX4: 1 = no fix, 3 = 3D fix.
+  unsigned int fixType{1};  // MAVLink/PX4: 0 = absent, 1 = no fix, 3 = 3D fix.
   double ephM{9999.0};
   double epvM{9999.0};
   double hdop{9999.0};

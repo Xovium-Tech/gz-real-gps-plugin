@@ -77,7 +77,7 @@ int main()
     std::mutex mutex;
     std::condition_variable received;
     std::vector<gz::msgs::NavSat> normalMessages, deniedMessages, scenarioMessages;
-    std::vector<gz::msgs::NavSat> invalidMessages;
+    std::vector<gz::msgs::NavSat> invalidMessages, absentMessages, connectionMessages;
     gz::transport::Node subscriber;
     std::function<void(const gz::msgs::NavSat &)> normal = [&](const auto &message)
     {
@@ -102,6 +102,20 @@ int main()
       std::lock_guard<std::mutex> lock(mutex);
       invalidMessages.push_back(message);
     };
+    std::function<void(const gz::msgs::NavSat &)> absent = [&](const auto &message)
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      absentMessages.push_back(message);
+    };
+    std::function<void(const gz::msgs::NavSat &)> connection = [&](const auto &message)
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      connectionMessages.push_back(message);
+      received.notify_all();
+    };
+    Check(subscriber.Subscribe("/gps_test/absent", absent), "Subscribe to absent receivers");
+    Check(subscriber.Subscribe("/gps_test/connection", connection),
+          "Subscribe to receiver connection timeline");
     Check(subscriber.Subscribe("/world/gps_test/model/normal/link/base_link/sensor/navsat_sensor/navsat",
                                normal), "Subscribe to default PX4 topic");
     Check(subscriber.Subscribe("/gps_test/denied", denied), "Subscribe to custom topic");
@@ -127,6 +141,14 @@ int main()
       "<event name='restored'><at_seconds>6.6</at_seconds></event>"
       "<event name='blackout'><at_seconds>7.4</at_seconds><output_enabled>false</output_enabled></event>"
       "<event name='output_restored'><at_seconds>8.4</at_seconds></event></scenario>";
+    const std::string connectionTimeline =
+      "<topic>/gps_test/connection</topic><quality>none</quality>"
+      "<reacquisition_seconds>0.3</reacquisition_seconds><scenario>"
+      "<event name='connected'><at_seconds>1</at_seconds><quality>normal</quality></event>"
+      "<event name='disconnected'><at_seconds>2</at_seconds><quality>none</quality>"
+      "<output_enabled>true</output_enabled></event>"
+      "<event name='reconnected'><at_seconds>3</at_seconds><quality>normal</quality></event>"
+      "</scenario>";
     const std::vector<std::string> badScenarios{
       "<scenario/>",
       "<scenario><evnt><at_seconds>0</at_seconds></evnt></scenario>",
@@ -151,28 +173,38 @@ int main()
       "<plugin filename='gz-sim-physics-system' name='gz::sim::systems::Physics'/>" +
       Model("normal", "<quality>normal</quality>") +
       Model("denied", "<quality>denied</quality><topic>/gps_test/denied</topic>") +
+      Model("none", "<quality>none</quality><topic>/gps_test/absent</topic>") +
+      Model("none_zone", "<quality>normal</quality><topic>/gps_test/absent</topic>"
+            "<zone><latitude_deg>52.23</latitude_deg><longitude_deg>21.02</longitude_deg>"
+            "<radius_m>100</radius_m><quality>none</quality></zone>") +
+      Model("connection", connectionTimeline) +
       Model("scenario", timeline) + rejectedModels +
       "</world></sdf>"), "Accept test world");
     gz::sim::Server server(config);
     server.SetUpdatePeriod(2ms);
     Check(server.Run(false, 0, false), "Start headless server");
     std::vector<gz::msgs::NavSat> fixes, outages, scenarioFixes, rejectedFixes;
+    std::vector<gz::msgs::NavSat> absentFixes, connectionFixes;
     bool complete = false;
     {
       std::unique_lock<std::mutex> lock(mutex);
       complete = received.wait_for(lock, 15s, [&]
       {
         return normalMessages.size() >= 5 && deniedMessages.size() >= 5 &&
-          !scenarioMessages.empty() && scenarioMessages.back().header().stamp().sec() >= 9;
+          !scenarioMessages.empty() && scenarioMessages.back().header().stamp().sec() >= 9 &&
+          !connectionMessages.empty() && connectionMessages.back().header().stamp().sec() >= 9;
       });
       fixes = normalMessages;
       outages = deniedMessages;
       scenarioFixes = scenarioMessages;
       rejectedFixes = invalidMessages;
+      absentFixes = absentMessages;
+      connectionFixes = connectionMessages;
     }
     server.Stop();
     Check(complete, "Expected normal, denied and complete scenario NavSat sequence within 15 seconds");
     Check(rejectedFixes.empty(), "Invalid scenario SDF must disable publication");
+    Check(absentFixes.empty(), "Static none quality and none zones publish zero NavSat messages");
     const auto &fix = fixes.back();
     const auto fields = Metadata(fix);
     Check(fields.at("gnss.schema_version") == "1", "Metadata schema");
@@ -203,6 +235,29 @@ int main()
     Check(deniedFields.at("gnss.fix_type") == "1" && deniedFields.at("gnss.satellites_used") == "0",
           "Denied model must publish no-fix metadata");
     Check(deniedFields.at("gnss.quality") == "denied", "Custom-topic denied reception metadata");
+    bool connected = false, reconnected = false, reconnecting = false;
+    for (const auto &sample : connectionFixes)
+    {
+      const double time = seconds(sample);
+      Check(time >= 1 && (time < 2 || time >= 3),
+            "None quality suppresses all messages before connection and during disconnection");
+      const auto metadata = Metadata(sample);
+      Check(metadata.at("gnss.quality") == "normal",
+            "Only an explicitly connected receiver publishes messages");
+      const bool valid = metadata.at("gnss.fix_type") == "3";
+      if (time < 2 && valid) connected = true;
+      if (time >= 3)
+      {
+        if (metadata.at("gnss.reacquiring") == "1")
+        {
+          Check(!valid, "A reconnected receiver waits for its reacquisition delay");
+          reconnecting = true;
+        }
+        if (valid) reconnected = true;
+      }
+    }
+    Check(connected && reconnecting && reconnected,
+          "None timeline supports connection, complete message loss and reacquisition");
     std::map<std::string, unsigned int> observed;
     bool recovered = false, reacquired = false, dropout = false, betweenDropouts = false;
     for (const auto &sample : scenarioFixes)

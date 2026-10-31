@@ -58,6 +58,7 @@ Quality ParseQuality(const std::string &name)
   if (normalized == "spoofing" || normalized == "gps_spoofing" || normalized == "gps-spoofing")
     return Quality::Spoofing;
   if (normalized == "denied" || normalized == "jamming") return Quality::Denied;
+  if (normalized == "none") return Quality::None;
   throw std::invalid_argument("Unknown GPS quality: " + name);
 }
 
@@ -70,6 +71,7 @@ std::string QualityName(Quality quality)
     case Quality::Poor: return "poor";
     case Quality::Spoofing: return "spoofing";
     case Quality::Denied: return "denied";
+    case Quality::None: return "none";
   }
   throw std::invalid_argument("Invalid GPS quality enum");
 }
@@ -209,6 +211,22 @@ Measurement Receiver::Sample(double simulationSeconds, double lat, double lon,
     m.scenario.velocityOffsetEnuMps = {config_.spoofOffsetEnuM.x * derivative,
                                      config_.spoofOffsetEnuM.y * derivative,
                                      config_.spoofOffsetEnuM.z * derivative};
+  }
+  if (m.quality == Quality::None)
+  {
+    // An absent/disconnected receiver produces no packets, including no-fix
+    // reports. Quality takes precedence over an event's output_enabled=true.
+    m.scenario.outputEnabled = false;
+    m.fixType = 0;
+    m.status = "receiver_absent";
+    m.latitudeDeg = lat;
+    m.longitudeDeg = lon;
+    m.altitudeM = alt;
+    hasFix_ = false;
+    receptionLost_ = true;
+    reacquireUntil_ = 0.0;
+    lastMeasurement_ = m;
+    return m;
   }
   const double usedMask = std::min(90.0, mask + (m.quality == Quality::Poor ? 15.0 : 0.0));
   const Vec3 receiver = GeodeticToEcef(lat, lon, alt);

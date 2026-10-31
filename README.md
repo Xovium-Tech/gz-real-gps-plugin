@@ -116,7 +116,8 @@ The default topic is `/world/WORLD/model/MODEL/link/base_link/sensor/navsat_sens
 | `normal` | 1.5 m range-error sigma, correlated position drift and velocity noise. |
 | `poor` | 6 m range-error sigma and a further 15° elevation mask; fewer satellites and possible fix loss. |
 | `spoofing` | Gradually displaced position and matching velocity error, with normal reported uncertainty. |
-| `denied` | Zero satellites, no fix and invalid velocity. |
+| `denied` | Receiver present: continues publishing zero satellites, no fix and invalid velocity. |
+| `none` | Receiver absent/disconnected: publishes no GPS messages at all. |
 
 Accuracy depends on satellite geometry; these values are not fixed position-accuracy outputs. Fewer than four usable satellites produces no fix. Aliases `gps_spoofing`, `gps-spoofing` and `jamming` are also accepted.
 
@@ -128,6 +129,41 @@ by `normal`, `excellent` and `spoofing`; quality changes the receiver noise.
 Other locations, higher masks, degradation zones or real almanacs can still
 produce poor geometry. PX4's stationary-drift and other navigation checks remain
 independent, so a 3D receiver fix alone does not guarantee navigation or home readiness.
+
+To simulate a drone with **no GPS module from startup**, set:
+
+```xml
+<quality>none</quality>
+```
+
+This sends no NavSat packets or GPS metadata to PX4, rather than sending a
+zero-satellite receiver report. Remove any stock NavSat sensor or other GPS
+publisher as described in the setup instructions. Use a fresh simulation to
+test a receiver that was never present; a receiver disconnected during a run
+will first become stale according to PX4's normal sensor timeouts. For permanent
+absence, remove any zone or event that overrides the quality with another value.
+
+`none` also works in zones and scenario events. For example, disconnect at
+30 seconds and reconnect at 60 seconds:
+
+```xml
+<quality>normal</quality>
+<scenario>
+  <event name="gps_disconnected">
+    <at_seconds>30</at_seconds>
+    <quality>none</quality>
+  </event>
+  <event name="gps_reconnected">
+    <at_seconds>60</at_seconds>
+    <quality>normal</quality>
+  </event>
+</scenario>
+```
+
+No no-fix or placeholder messages are sent during `none`, even if that event
+sets `output_enabled` to `true`. Reconnection respects `reacquisition_seconds`
+(zero by default). PX4 may still transmit its own stale/no-GPS status after
+disconnection; that is autopilot status, not receiver output.
 
 For `spoofing`, add this inside the plugin:
 
@@ -217,7 +253,7 @@ event, normal receiver/zone settings apply.
 | --- | --- | --- |
 | `at_seconds` | Required | World simulation timestamp in seconds. |
 | `transition_seconds` | `0` | Smooth transition of level, ENU bias and noise scale. |
-| `quality` | Base/zone quality | Optional `excellent`, `normal`, `poor` or `denied`; takes effect immediately at the timestamp. |
+| `quality` | Base/zone quality | Optional `excellent`, `normal`, `poor`, `denied` or `none`; takes effect immediately at the timestamp. |
 | `spoofing_level` | `0` | Fraction of the target displacement, from 0 to 1. |
 | `offset_enu_m` | `200 0 0` | Full-level displacement in east, north and up metres. |
 | `spoof_velocity` | `true` | Add the derivative of the bias to reported velocity. |
@@ -226,7 +262,7 @@ event, normal receiver/zone settings apply.
 | `noise_scale` | `1` | Multiplier from 0 to 100 for position/velocity noise and reported uncertainty, subject to the reporting floors below. |
 | `dropout_period_seconds` | `0` | Period of repeated no-fix intervals; zero disables them. |
 | `dropout_duration_seconds` | `0` | No-fix duration at the beginning of each period, measured from this event's timestamp. |
-| `output_enabled` | `true` | Set false to suppress NavSat publication and exercise missing-sensor timeout handling. |
+| `output_enabled` | `true` | Set false to suppress NavSat publication and exercise missing-sensor timeout handling. Quality `none` always suppresses output. |
 
 `noise_scale=0` turns off random position and velocity error; configured spoofing
 biases still apply. Valid fixes retain reported accuracy floors of **0.01 m**
@@ -259,7 +295,8 @@ For a transport blackout, set `<output_enabled>false</output_enabled>` in an
 event, followed by a later event with output enabled (the default). Unlike
 `quality=denied`, no NavSat packets are published during that interval. Internal
 receiver sampling continues, so this setting alone does not trigger receiver
-reacquisition; combine it with denied quality if both effects are needed.
+reacquisition. Use `quality=none` to model a disconnected receiver and apply
+the configured reacquisition delay when it reconnects.
 
 Timestamps must be nonnegative and strictly increasing. A transition must finish
 by the next timestamp, and its positive duration must produce a representable

@@ -269,6 +269,7 @@ class RealGpsSystem final : public gz::sim::System,
       const auto velocity = gzsim::VelocityEnu(frame, worldVelocity.value_or(gz::math::Vector3d::Zero), lla.X(), lla.Y());
       const auto fix = receiver_->Sample(now, lla.X(), lla.Y(), lla.Z(),
                                         {velocity.X(), velocity.Y(), velocity.Z()});
+      if (!fix.scenario.outputEnabled) return;
       gz::msgs::NavSat message;
       const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(info.simTime).count();
       message.mutable_header()->mutable_stamp()->set_sec(ns / 1000000000);
@@ -323,7 +324,7 @@ class RealGpsSystem final : public gz::sim::System,
       Metadata(message, "gnss.truth_velocity_east", velocity.X());
       Metadata(message, "gnss.truth_velocity_north", velocity.Y());
       Metadata(message, "gnss.truth_velocity_up", velocity.Z());
-      if (fix.scenario.outputEnabled) publisher_.Publish(message);
+      publisher_.Publish(message);
     }
     catch (const std::exception &error)
     {

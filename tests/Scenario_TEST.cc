@@ -501,6 +501,63 @@ void ReceiverDenialAndReacquisition()
   }
 }
 
+void ReceiverAbsence()
+{
+  Config config;
+  config.reacquisitionSeconds = 0.5;
+  auto disconnect = Event(1);
+  disconnect.quality = Quality::None;
+  // An enabled output flag cannot manufacture a missing receiver.
+  disconnect.outputEnabled = true;
+  config.scenario = {disconnect, Event(2)};
+  Receiver receiver(config);
+  Check(Sample(receiver, 0).valid, "Receiver fixes before disconnect");
+  for (double time : {1.0, 1.2, 1.999})
+  {
+    const auto missing = Sample(receiver, time);
+    Check(missing.quality == Quality::None && !missing.scenario.outputEnabled &&
+          !missing.valid && missing.fixType == 0 && missing.satellitesUsed == 0 &&
+          missing.status == "receiver_absent",
+          "None event suppresses observations even when output_enabled is true");
+  }
+  const auto reconnect = Sample(receiver, 2);
+  Check(reconnect.scenario.outputEnabled && reconnect.quality == Quality::Normal &&
+        reconnect.reacquiring && !reconnect.valid && reconnect.fixType == 1,
+        "Reconnected receiver publishes no-fix while reacquiring");
+  Check(!Sample(receiver, 2.499).valid && Sample(receiver, 2.5).valid,
+        "Reconnected receiver obeys the configured reacquisition delay");
+  // Rewind must reset the disconnected/reacquisition state along with the clock.
+  Check(Sample(receiver, 0).valid, "Simulation rewind restores the healthy initial receiver");
+
+  config = Config{};
+  config.quality = Quality::None;
+  auto connect = Event(1);
+  connect.quality = Quality::Normal;
+  config.scenario = {Event(0), connect, Event(2)};
+  Receiver initiallyAbsent(config);
+  Check(!Sample(initiallyAbsent, 0).scenario.outputEnabled,
+        "An event without quality cannot enable an absent base receiver");
+  Check(Sample(initiallyAbsent, 1).valid &&
+        Sample(initiallyAbsent, 1).scenario.outputEnabled,
+        "An explicit normal event connects a receiver when base quality is none");
+  Check(!Sample(initiallyAbsent, 2).scenario.outputEnabled,
+        "Omitted event quality returns to the absent base receiver");
+
+  config.quality = Quality::Normal;
+  config.zones.push_back({52.23, 21.02, 100, 0, 200, Quality::None});
+  Receiver zone(config);
+  Check(!Sample(zone, 0).scenario.outputEnabled,
+        "A none zone disconnects the receiver at the current location");
+  const auto zoneOverride = Sample(zone, 1);
+  Check(zoneOverride.valid && zoneOverride.scenario.outputEnabled,
+        "Explicit normal event overrides a none zone");
+  Check(!Sample(zone, 2).scenario.outputEnabled,
+        "Omitted event quality restores the matching none zone");
+  const auto outside = zone.Sample(3, 0, 0, 100, {});
+  Check(outside.valid && outside.scenario.outputEnabled,
+        "Leaving a none zone restores receiver output");
+}
+
 void ReplayAndStaleDiagnostics()
 {
   Config config;
@@ -562,6 +619,7 @@ int main()
     ReceiverQualityAndCompatibility();
     ReceiverAttackAndNoise();
     ReceiverDenialAndReacquisition();
+    ReceiverAbsence();
     ReplayAndStaleDiagnostics();
     std::cout << "Timed scenario validation, trajectories, receiver faults and replay passed\n";
     return 0;

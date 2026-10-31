@@ -8,7 +8,7 @@
 
 namespace real_gps::core
 {
-enum class Quality { Excellent, Normal, Poor, Spoofing, Denied };
+enum class Quality { Excellent, Normal, Poor, Spoofing, Denied, None };
 Quality ParseQuality(const std::string &name);
 std::string QualityName(Quality quality);
 
@@ -29,7 +29,7 @@ struct ScenarioEvent
   bool outputEnabled{true};
   double noiseScale{1.0};
   // Periodic no-fix intervals, starting at this event's timestamp. Both zero
-  // disables dropouts. Complete denial is represented by quality=Denied.
+  // disables dropouts. Denied reports no fix; None suppresses receiver output.
   double dropoutPeriodSeconds{0.0};
   double dropoutDurationSeconds{0.0};
 };

@@ -214,7 +214,18 @@ void ReceiverBehavior()
   Receiver denied(config);
   const auto outage = Sample(denied, 0);
   Check(!outage.valid && outage.fixType == 1 && outage.satellitesUsed == 0 &&
-        outage.ephM == 9999, "Denied reception must not claim a valid fix");
+        outage.ephM == 9999 && outage.scenario.outputEnabled,
+        "Denied reception publishes no-fix data from an existing receiver");
+  config.quality = Quality::None;
+  Receiver absent(config);
+  for (double time : {0.0, 1.0, 100.0})
+  {
+    const auto missing = Sample(absent, time);
+    Check(!missing.valid && missing.fixType == 0 && missing.satellitesUsed == 0 &&
+          missing.satellitesVisible == 0 && !missing.scenario.outputEnabled &&
+          missing.status == "receiver_absent",
+          "An absent receiver must never produce a GNSS observation");
+  }
   config.quality = Quality::Normal;
   config.elevationMaskDeg = 90;
   Receiver masked(config);
@@ -260,6 +271,8 @@ void ReceiverBehavior()
           "Nonfinite velocity");
   Check(ParseQuality("GPS-SPOOFING") == Quality::Spoofing &&
         ParseQuality("jamming") == Quality::Denied, "Quality aliases");
+  Check(ParseQuality("none") == Quality::None && ParseQuality("NONE") == Quality::None &&
+        QualityName(Quality::None) == "none", "Absent-receiver quality round trip");
   Invalid([] { ParseQuality("unknown"); }, "Unknown quality");
 }
 
